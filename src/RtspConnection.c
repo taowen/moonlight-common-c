@@ -110,8 +110,11 @@ static char* sealRtspMessage(PRTSP_MESSAGE request, int* messageLen) {
     }
     else if (!encryptedRtspEnabled) {
         *messageLen = plaintextLen;
+        Limelog("RTSP plaintext message:\n%s\n", serializedMessage);
         return serializedMessage;
     }
+
+    Limelog("RTSP message before encryption:\n%s\n", serializedMessage);
 
     encryptedMessage = (PENC_RTSP_HEADER)malloc(sizeof(ENC_RTSP_HEADER) + plaintextLen);
     if (encryptedMessage == NULL) {
@@ -221,10 +224,13 @@ static bool unsealRtspMessage(char* rawMessage, int rawMessageLen, PRTSP_MESSAGE
             free(decryptedMessage);
             return false;
         }
+
+        Limelog("RTSP message after decryption:\n%s\n", decryptedMessage);
     }
     else {
         decryptedMessage = rawMessage;
         decryptedMessageLen = rawMessageLen;
+        Limelog("RTSP plaintext message:\n%s\n", decryptedMessage);
     }
 
     if (parseRtspMessage(response, decryptedMessage, decryptedMessageLen) == RTSP_ERROR_SUCCESS) {

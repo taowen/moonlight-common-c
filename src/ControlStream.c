@@ -691,6 +691,10 @@ static bool sendMessageEnet(short ptype, short paylen, const void* payload, uint
         }
 
         // enetMutex still locked here
+        
+        // 添加发送日志
+        Limelog("Sending encrypted control message - Type: 0x%04x, Length: %d, Seq: %u\n", 
+            ptype, paylen, encPacket->seq);
     }
     else {
         PNVCTL_ENET_PACKET_HEADER_V1 packet;
@@ -705,6 +709,10 @@ static bool sendMessageEnet(short ptype, short paylen, const void* payload, uint
         memcpy(&packet[1], payload, paylen);
 
         PltLockMutex(&enetMutex);
+        
+        // 添加发送日志
+        Limelog("Sending control message - Type: 0x%04x, Length: %d\n", 
+            ptype, paylen);
     }
 
     volatile bool packetFreed = false;
@@ -1164,6 +1172,10 @@ static void controlReceiveThreadFunc(void* context) {
 
                     // We need to byteswap the unsealed header too
                     ctlHdr->type = LE16(ctlHdr->type);
+                    
+                    // 添加接收日志
+                    Limelog("Received encrypted control message - Type: 0x%04x, Length: %d, Seq: %u\n",
+                        ctlHdr->type, packetLength, encHdr->seq);
                 }
                 else {
                     LC_ASSERT_VT(false);
@@ -1176,6 +1188,10 @@ static void controlReceiveThreadFunc(void* context) {
                 // Take ownership of the packet data directly for the non-encrypted case
                 packetLength = (int)event.packet->dataLength;
                 event.packet->data = NULL;
+                
+                // 添加接收日志  
+                Limelog("Received control message - Type: 0x%04x, Length: %d\n",
+                    ctlHdr->type, packetLength);
             }
 
             // We're done with the packet struct
@@ -1211,6 +1227,14 @@ static void controlReceiveThreadFunc(void* context) {
                 }
 
                 hdrEnabled = (enableByte != 0);
+                
+                // 添加详细payload日志
+                Limelog("HDR Info message - Enabled: %d\n", hdrEnabled);
+                if (IS_SUNSHINE()) {
+                    Limelog("HDR Metadata - MaxLuminance: %d, MinLuminance: %d\n",
+                        hdrMetadata.maxDisplayLuminance,
+                        hdrMetadata.minDisplayLuminance);
+                }
             }
 
             // Process client callbacks in a separate thread
@@ -1229,6 +1253,7 @@ static void controlReceiveThreadFunc(void* context) {
                     BbGet32(&bb, &terminationErrorCode);
 
                     Limelog("Server notified termination reason: 0x%08x\n", terminationErrorCode);
+                    Limelog("Termination message - Error code: 0x%08x\n", terminationErrorCode);
 
                     // Normalize the termination error codes for specific values we recognize
                     switch (terminationErrorCode) {
@@ -1261,6 +1286,7 @@ static void controlReceiveThreadFunc(void* context) {
                     BbGet16(&bb, &terminationReason);
 
                     Limelog("Server notified termination reason: 0x%04x\n", terminationReason);
+                    Limelog("Termination message - Reason: 0x%04x\n", terminationReason);
 
                     // SERVER_TERMINATED_INTENDED
                     if (terminationReason == 0x0100) {
