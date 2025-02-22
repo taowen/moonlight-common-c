@@ -99,6 +99,15 @@ static void VideoReceiveThreadProc(void* context) {
     bufferSize = decryptedSize + sizeof(RTPV_QUEUE_ENTRY);
     buffer = NULL;
 
+    // 添加调试日志
+    Limelog("Video buffer configuration:\n");
+    Limelog(" Encrypted: %d\n", encrypted);
+    Limelog(" Packet Size: %d\n", StreamConfig.packetSize);
+    Limelog(" Decrypted Size: %d\n", decryptedSize);
+    Limelog(" Min Size: %d\n", minSize);
+    Limelog(" Receive Size: %d\n", receiveSize);
+    Limelog(" Buffer Size: %d\n", bufferSize);
+
     if (setNonFatalRecvTimeoutMs(rtpSocket, UDP_RECV_POLL_TIMEOUT_MS) < 0) {
         // SO_RCVTIMEO failed, so use select() to wait
         useSelect = true;

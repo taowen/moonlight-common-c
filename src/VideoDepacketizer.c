@@ -446,18 +446,34 @@ static void skipToNextNal(PBUFFER_DESC buffer) {
 
 static bool isIdrFrameStart(PBUFFER_DESC buffer) {
     BUFFER_DESC startSeq;
+    
+    // 添加输入参数日志
+    Limelog("isIdrFrameStart called - Buffer offset: %d, length: %d\n", 
+            buffer->offset, buffer->length);
 
     if (!getAnnexBStartSequence(buffer, &startSeq)) {
+        Limelog("No Annex B start sequence found\n");
         return false;
     }
 
+    // 添加找到的起始序列信息
+    Limelog("Found Annex B start sequence - Offset: %d, Length: %d\n",
+            startSeq.offset, startSeq.length);
+
     if (NegotiatedVideoFormat & VIDEO_FORMAT_MASK_H264) {
-        return H264_NAL_TYPE(startSeq.data[startSeq.offset + startSeq.length]) == H264_NAL_TYPE_SPS;
+        uint8_t nalType = H264_NAL_TYPE(startSeq.data[startSeq.offset + startSeq.length]);
+        bool isIdr = (nalType == H264_NAL_TYPE_SPS);
+        Limelog("H264 NAL type: %d, Is IDR: %d\n", nalType, isIdr);
+        return isIdr;
     }
     else if (NegotiatedVideoFormat & VIDEO_FORMAT_MASK_H265) {
-        return HEVC_NAL_TYPE(startSeq.data[startSeq.offset + startSeq.length]) == HEVC_NAL_TYPE_VPS;
+        uint8_t nalType = HEVC_NAL_TYPE(startSeq.data[startSeq.offset + startSeq.length]);
+        bool isIdr = (nalType == HEVC_NAL_TYPE_VPS);
+        Limelog("HEVC NAL type: %d, Is IDR: %d\n", nalType, isIdr);
+        return isIdr;
     }
     else {
+        Limelog("Unsupported video format: 0x%x\n", NegotiatedVideoFormat);
         LC_ASSERT(false);
         return false;
     }
@@ -472,9 +488,11 @@ static void reassembleFrame(int frameNumber) {
         // Use a stack allocation if we won't be queuing this
         if ((VideoCallbacks.capabilities & CAPABILITY_DIRECT_SUBMIT) == 0) {
             qdu = (PQUEUED_DECODE_UNIT)malloc(sizeof(*qdu));
+            Limelog("Allocated new decode unit for frame %d\n", frameNumber);
         }
         else {
             qdu = &qduDS;
+            Limelog("Using stack-allocated decode unit for frame %d\n", frameNumber);
         }
 
         if (qdu != NULL) {
@@ -502,10 +520,13 @@ static void reassembleFrame(int frameNumber) {
             nalChainHead = nalChainTail = NULL;
             nalChainDataLength = 0;
 
+            // Add detailed logging before queue/submit operations
             if ((VideoCallbacks.capabilities & CAPABILITY_DIRECT_SUBMIT) == 0) {
+                Limelog("Attempting to queue frame %d - Queue size: %d, Frame size: %d bytes\n",
+                    frameNumber, LbqGetItemCount(&decodeUnitQueue), nalChainDataLength);
+                
                 if (LbqOfferQueueItem(&decodeUnitQueue, qdu, &qdu->entry) == LBQ_BOUND_EXCEEDED) {
-                    Limelog("Video decode unit queue overflow\n");
-
+                    Limelog("Video decode unit queue overflow - Dropping frame %d\n", frameNumber);
                     // RFI recovery is not supported here
                     waitingForIdrFrame = true;
 
@@ -524,12 +545,28 @@ static void reassembleFrame(int frameNumber) {
                     LiRequestIdrFrame();
                     return;
                 }
+                else {
+                    Limelog("Successfully queued frame %d\n", frameNumber);
+                }
             }
             else {
+                Limelog("Submitting frame %d directly to decoder - Size: %d bytes\n", 
+                    frameNumber, nalChainDataLength);
+                
                 // Submit the frame to the decoder
                 validateDecodeUnitForPlayback(&qdu->decodeUnit);
                 LiCompleteVideoFrame(qdu, VideoCallbacks.submitDecodeUnit(&qdu->decodeUnit));
             }
+
+            // Add frame statistics logging
+            Limelog("Frame %d stats - Type: %s, Size: %d bytes, PTS: %u ms, Latency: %u ms, HDR: %s, Colorspace: %d\n",
+                frameNumber,
+                qdu->decodeUnit.frameType == FRAME_TYPE_IDR ? "IDR" : "P-frame",
+                qdu->decodeUnit.fullLength,
+                qdu->decodeUnit.presentationTimeMs,
+                qdu->decodeUnit.frameHostProcessingLatency,
+                qdu->decodeUnit.hdrActive ? "On" : "Off",
+                qdu->decodeUnit.colorspace);
 
             // Notify the control connection
             connectionReceivedCompleteFrame(frameNumber);
@@ -540,6 +577,12 @@ static void reassembleFrame(int frameNumber) {
             // Move the start of our (potential) RFI window to the next frame
             startFrameNumber = nextFrameNumber;
         }
+        else {
+            Limelog("Failed to allocate decode unit for frame %d\n", frameNumber);
+        }
+    }
+    else {
+        Limelog("No NAL chain data available for frame %d\n", frameNumber);
     }
 }
 
@@ -598,6 +641,8 @@ static int getBufferFlags(char* data, int length) {
 static void queueFragment(PLENTRY_INTERNAL* existingEntry, char* data, int offset, int length) {
     PLENTRY_INTERNAL entry;
 
+    Limelog("Queueing fragment - Length: %d bytes\n", length);
+
     if (existingEntry == NULL || *existingEntry == NULL) {
         entry = (PLENTRY_INTERNAL)malloc(sizeof(*entry) + length);
     }
@@ -630,6 +675,7 @@ static void queueFragment(PLENTRY_INTERNAL* existingEntry, char* data, int offse
         entry->entry.bufferType = getBufferFlags(entry->entry.data, entry->entry.length);
 
         nalChainDataLength += entry->entry.length;
+        Limelog("Added fragment to NAL chain - Total length: %d bytes\n", nalChainDataLength);
 
         if (nalChainTail == NULL) {
             LC_ASSERT(nalChainHead == NULL);
@@ -640,6 +686,9 @@ static void queueFragment(PLENTRY_INTERNAL* existingEntry, char* data, int offse
             nalChainTail->next = (PLENTRY)entry;
             nalChainTail = nalChainTail->next;
         }
+    }
+    else {
+        Limelog("Failed to allocate entry for fragment\n");
     }
 }
 
@@ -765,8 +814,13 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
 
     streamPacketIndex = videoPacket->streamPacketIndex;
     
+    Limelog("Processing RTP packet - Frame: %d, Flags: 0x%x, Length: %d, PacketIndex: %d, LastIndex: %d\n", 
+            frameIndex, flags, length, streamPacketIndex, lastPacketInStream);
+
     // Drop packets from a previously corrupt frame
     if (isBefore32(frameIndex, nextFrameNumber)) {
+        Limelog("Dropping packet from old frame %d (current frame: %d)\n", 
+                frameIndex, nextFrameNumber);
         return;
     }
 
@@ -841,9 +895,17 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
     uint32_t frameHeaderSize;
     LC_ASSERT_VT(currentPos.length > 0);
     if (firstPacket && currentPos.length > 0) {
+        // 添加视频格式和版本号的日志
+        Limelog("Video format: 0x%x, App version check result: %d\n", 
+                NegotiatedVideoFormat,
+                APP_VERSION_AT_LEAST(7, 1, 350));
+        
         // Parse the frame type from the header
         LC_ASSERT_VT(currentPos.length >= 4);
         if (APP_VERSION_AT_LEAST(7, 1, 350) && currentPos.length >= 4) {
+            // 添加帧类型的日志
+            Limelog("Frame type byte: 0x%x\n", currentPos.data[currentPos.offset + 3]);
+            
             switch (currentPos.data[currentPos.offset + 3]) {
             case 1: // Normal P-frame
                 break;
@@ -955,35 +1017,62 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
 
         LC_ASSERT_VT(currentPos.length >= frameHeaderSize);
         if (currentPos.length >= frameHeaderSize) {
-            // Skip past the frame header
+            Limelog("Frame header size: %d bytes\n", frameHeaderSize);
             currentPos.offset += frameHeaderSize;
             currentPos.length -= frameHeaderSize;
         }
 
+        // 添加视频格式判断的日志
+        Limelog("Video format check: !(0x%x & (0x%x | 0x%x)) = %d\n",
+                NegotiatedVideoFormat,
+                VIDEO_FORMAT_MASK_H264,
+                VIDEO_FORMAT_MASK_H265,
+                !(NegotiatedVideoFormat & (VIDEO_FORMAT_MASK_H264 | VIDEO_FORMAT_MASK_H265)));
+
         // We only parse H.264 and HEVC at the NALU level
         if (NegotiatedVideoFormat & (VIDEO_FORMAT_MASK_H264 | VIDEO_FORMAT_MASK_H265)) {
+            // 添加日志记录 NALU 开始前的状态
+            Limelog("Checking for Annex B start sequence at offset: %d, length: %d\n", 
+                    currentPos.offset, currentPos.length);
+
             // The Annex B NALU start prefix must be next
             if (!getAnnexBStartSequence(&currentPos, NULL)) {
                 // If we aren't starting on a start prefix, something went wrong.
+                Limelog("Error: Missing expected Annex B start sequence\n");
                 LC_ASSERT_VT(false);
 
                 // For release builds, we will try to recover by searching for one.
                 // This mimics the way most decoders handle this situation.
+                Limelog("Attempting recovery by searching for next NAL\n");
                 skipToNextNal(&currentPos);
             }
 
+            // 添加日志记录 AUD NAL 检查
+            Limelog("Checking for AUD NAL at offset: %d\n", currentPos.offset);
+            
             // If an AUD NAL is prepended to this frame data, remove it.
             // Other parts of this code are not prepared to deal with a
             // NAL of that type, so stripping it is the easiest option.
             if (isAccessUnitDelimiter(&currentPos)) {
+                Limelog("Found and removing AUD NAL\n");
                 skipToNextNal(&currentPos);
             }
 
+            // 添加日志记录 SEI NAL 检查
+            Limelog("Checking for SEI NALs at offset: %d\n", currentPos.offset);
+
             // There may be one or more SEI NAL units prepended to the
             // frame data *after* the (optional) AUD.
+            int seiNalCount = 0;
             while (isSeiNal(&currentPos)) {
+                seiNalCount++;
+                Limelog("Found and removing SEI NAL #%d\n", seiNalCount);
                 skipToNextNal(&currentPos);
             }
+            
+            // 添加最终位置的日志
+            Limelog("NAL processing complete - Final offset: %d, Removed SEI NALs: %d\n", 
+                    currentPos.offset, seiNalCount);
         }
     }
     else {
@@ -1062,9 +1151,22 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
         decodingFrame = false;
         nextFrameNumber = frameIndex + 1;
 
+        // Add logging here
+        Limelog("Frame %d complete - Size: %d bytes, Type: %s, PTS: %u ms, Latency: %u ms\n",
+                frameIndex,
+                nalChainDataLength, 
+                frameType == FRAME_TYPE_IDR ? "IDR" : "P-frame",
+                firstPacketPresentationTime,
+                frameHostProcessingLatency);
+
         // If we can't submit this frame due to a discontinuity in the bitstream,
         // inform the host (if needed) and drop the data.
         if (waitingForIdrFrame || waitingForRefInvalFrame) {
+            // Add more detailed logging here
+            Limelog("Frame %d dropped - %s\n",
+                    frameIndex,
+                    waitingForIdrFrame ? "Waiting for IDR frame" : "Waiting for RFI frame");
+
             // IDR wait takes priority over RFI wait (and an IDR frame will satisfy both)
             if (waitingForIdrFrame) {
                 Limelog("Waiting for IDR frame\n");

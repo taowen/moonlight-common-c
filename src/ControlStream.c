@@ -693,8 +693,8 @@ static bool sendMessageEnet(short ptype, short paylen, const void* payload, uint
         // enetMutex still locked here
         
         // 添加发送日志
-        Limelog("Sending encrypted control message - Type: 0x%04x, Length: %d, Seq: %u\n", 
-            ptype, paylen, encPacket->seq);
+        // Limelog("Sending encrypted control message - Type: 0x%04x, Length: %d, Seq: %u\n", 
+        //     ptype, paylen, encPacket->seq);
     }
     else {
         PNVCTL_ENET_PACKET_HEADER_V1 packet;
